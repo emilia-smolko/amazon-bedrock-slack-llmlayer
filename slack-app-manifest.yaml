@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: MIT-0
 
 display_information:
-  name: BedrockSlackGateway
+  name: BedrockBot
   description: A bot that uses Bedrock.
   background_color: "#2f3033"
 features:
   bot_user:
-    display_name: BedrockSlackGateway
+    display_name: BedrockBot
     always_online: true
 oauth_config:
   scopes:
