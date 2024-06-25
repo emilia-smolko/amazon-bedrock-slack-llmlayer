@@ -11,7 +11,70 @@ from langchain.prompts import PromptTemplate
 from langchain.llms.bedrock import Bedrock
 from langchain.chains.llm import LLMChain
 from botocore.response import StreamingBody
+def build_chain():
+  region = os.environ["AWS_REGION"]
+  kendra_index_id = os.environ["KENDRA_INDEX_ID"]
+  boto3_bedrock = boto3.client(
+      service_name='bedrock-runtime',
+      region_name=region,
+  )
 
+
+  llm = Bedrock(
+      client=boto3_bedrock,
+      region_name = region,
+      model_kwargs={"max_tokens_to_sample":300,"temperature":1,"top_k":250,"top_p":0.999,"anthropic_version":"bedrock-2023-05-31"},
+      model_id="anthropic.claude-v2"
+  )
+      
+  retriever = AmazonKendraRetriever(index_id=kendra_index_id,top_k=5,region_name=region)
+
+
+  prompt_template = """Human: This is a friendly conversation between a human and an AI. 
+  The AI is talkative and provides specific details from its context but limits it to 240 tokens.
+  If the AI does not know the answer to a question, it truthfully says it 
+  does not know.
+
+  Assistant: OK, got it, I'll be a talkative truthful AI assistant.
+
+  Human: Here are a few documents in <documents> tags:
+  <documents>
+  {context}
+  </documents>
+  Based on the above documents, provide a detailed answer for, {question} 
+  Answer "don't know" if not present in the document. 
+
+  Assistant:
+  """
+  PROMPT = PromptTemplate(
+      template=prompt_template, input_variables=["context", "question"]
+  )
+
+  condense_qa_template = """{chat_history}
+  Human:
+  Given the previous conversation and a follow up question below, rephrase the follow up question
+  to be a standalone question.
+
+  Follow Up Question: {question}
+  Standalone Question:
+
+  Assistant:"""
+  standalone_question_prompt = PromptTemplate.from_template(condense_qa_template)
+
+
+  
+  qa = ConversationalRetrievalChain.from_llm(
+        llm=llm, 
+        retriever=retriever, 
+        condense_question_prompt=standalone_question_prompt, 
+        return_source_documents=True, 
+        combine_docs_chain_kwargs={"prompt":PROMPT},
+        verbose=True)
+
+  # qa = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, qa_prompt=PROMPT, return_source_documents=True)
+  return qa
+chat_history = []
+qa = build_chain()
 # Initialize AWS clients for Bedrock and Secrets Manager
 bedrock_runtime_client = boto3.client('bedrock-runtime')
 secretsmanager_client = boto3.client('secretsmanager')
@@ -57,9 +120,9 @@ def handle_message(event):
 	slack_text = slack_body.get('event').get('text')
 	slack_user = slack_body.get('event').get('user')
 	channel = slack_body.get('event').get('channel')
-	if (slack_user != "U06D5B8AR8R"):
+	if (slack_user != "U079K9G0R7X"):
 		# Replace the bot username with an empty string
-		msg = call_bedrock(slack_text.replace('<@U06D5B8AR8R>', ''))
+		msg = call_bedrock(slack_text.replace('<@U079K9G0R7X>', ''))
 	
 		# Prepare the data for the Slack API request
 		data = {
@@ -85,44 +148,21 @@ def handle_message(event):
 		'body': json.dumps({'msg': "message recevied"})
 	}
 
+
+
+def run_chain(chain, prompt: str, history=[]):
+	return chain({"question": prompt, "chat_history": history})
+
 def call_bedrock(question):
-	"""
-	Calls the Bedrock AI model with the given question.
-
-	Args:
-		question (str): The question to ask the Bedrock AI model.
-
-	Returns:
-		str: The response from the Bedrock AI model.
-	"""
-	body = json.dumps({
-		"prompt": f"\\n\\nHuman: Act as a slack bot. {question}\\n\\nAssistant:",
-		"maxTokens": 3000,
-		"temperature": 0.5,
-		"topP": 1
-	})
-
-	model_id = 'ai21.j2-ultra-v1'
-	accept = 'application/json'
-	content_type = 'application/json'
-
-	# Call the Bedrock AI model
-	response = bedrock_runtime_client.invoke_model(
-		body=body,
-		modelId=model_id,
-		accept=accept,
-		contentType=content_type
-	)
-
-	# Process the response from the Bedrock AI model
-	if isinstance(response.get('body'), StreamingBody):
-		response_content = response['body'].read().decode('utf-8')
-	else:
-		response_content = response.get('body')
-
-	response_body = json.loads(response_content)
-
-	return response_body.get('completions')[0].get('data').get('text')
+	
+	result = run_chain(qa, question, chat_history)
+	chat_history.append((question, result["answer"]))
+	result2 = result['answer'] 
+	if 'source_documents' in result:
+		result2=result2+"\\n Sources:"
+		for d in result['source_documents']:
+			result2=result2+"\\n" + d.metadata['source']
+	return result2 
 
 def handler(event, context):
 	"""
